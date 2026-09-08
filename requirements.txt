@@ -1,0 +1,4 @@
+# Requer as bibliotecas de sistema do VLC (não instaláveis via pip):
+#   sudo apt install libvlc5 libvlc-bin vlc-plugin-base
+python-vlc
+PySide6

@@ -1,0 +1,9 @@
+# Ambiente virtual
+.venv/
+
+# Artefatos de build/empacotamento
+dist/
+
+# Bytecode Python
+__pycache__/
+*.pyc
