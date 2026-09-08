@@ -144,6 +144,8 @@ class RadioApp(QWidget):
             stream_url = stream_url.strip()
             if not name or not stream_url:
                 continue
+            if "quran" in name.lower():
+                continue
             if name in radios:
                 name = f"{name} ({station.get('countrycode', '')})"
             radios[name] = {"url": stream_url, "uuid": station.get("stationuuid")}
@@ -249,6 +251,8 @@ class RadioApp(QWidget):
         # ===== STATUS =====
         self.status_label = QLabel("Status: Stopped")
         self.status_label.setStyleSheet("color: gray;")
+        self.status_label.setWordWrap(True)
+        self.status_label.setFixedWidth(LABEL_WIDTH + COMBO_WIDTH)
         layout.addWidget(self.status_label)
 
     def on_country_changed(self, index=None):
@@ -386,13 +390,13 @@ class RadioApp(QWidget):
         self.status_label.setText(f"Status: Paused - {self.current_radio}")
         self.status_label.setStyleSheet("color: orange;")
 
-    def _update_ui_stopped(self):
+    def _update_ui_stopped(self, message="Stopped"):
         """Update UI when stopped"""
         self.play_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
         self.country_combo.setEnabled(True)
-        self.status_label.setText("Status: Stopped")
+        self.status_label.setText(f"Status: {message}")
         self.status_label.setStyleSheet("color: gray;")
 
     def update_status(self):
@@ -400,8 +404,12 @@ class RadioApp(QWidget):
         state = self.player.get_state()
         if self.is_playing and state in (vlc.State.Ended, vlc.State.Error, vlc.State.Stopped):
             self.is_playing = False
-            self.log(f"Channel not available: {self.current_radio} ({state})")
-            self._update_ui_stopped()
+            if state in (vlc.State.Ended, vlc.State.Error):
+                self.log(f"Erro de conexão/TLS: {self.current_radio}")
+                self._update_ui_stopped("Erro de conexão/TLS")
+            else:
+                self.log(f"Channel not available: {self.current_radio} ({state})")
+                self._update_ui_stopped()
 
     def log(self, message):
         """Record a message in the log buffer, print it to the terminal and, if the log window is open, show it there"""
