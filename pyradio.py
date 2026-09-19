@@ -1,25 +1,92 @@
+import os
 import sys
 import json
+import math
+import time
 import datetime
 import threading
 import urllib.request
 
 import vlc
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import Qt, QPoint, QPointF, QSize, QTimer, Signal
+from PySide6.QtGui import QColor, QIcon, QPainter, QPalette, QPixmap, QPolygonF
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
     QComboBox, QPushButton, QSlider, QMessageBox, QLayout,
     QDialog, QTextEdit, QLineEdit
 )
 
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+ASSETS_DIR = os.path.join(BASE_DIR, "assets")
+ICON_SIZE = QSize(24, 24)
+FAVORITE_GREEN = QColor(46, 204, 113)
+
 API_BASE = "https://de1.api.radio-browser.info"
 USER_AGENT = "pyradio-qt/1.0"
+CACHE_TTL_SECONDS = 2 * 60 * 60
+MY_RADIOS_FILE = os.path.join(BASE_DIR, "my_radios.json")
+CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "pyradio")
+FAVORITES_FILE = os.path.join(CONFIG_DIR, "favorites.json")
 
-WINDOW_MIN_WIDTH = 420
-LABEL_WIDTH = 60
+WINDOW_MIN_WIDTH = 440
+LABEL_WIDTH = 75
 VOLUME_VALUE_WIDTH = 40
 COMBO_WIDTH = 300
 BUTTON_WIDTH = 100
+
+GENRE_TAGS = {
+    "rock", "pop", "sertanejo", "sertanejo universitario", "mpb", "funk",
+    "samba", "pagode", "forró", "axé", "gospel", "jazz",
+    "blues", "classical", "clássica", "electronic", "electronica",
+    "eletronica", "eletrônica", "house", "techno", "trance", "hip hop",
+    "hiphop", "hip-hop", "rap", "reggae", "reggaeton", "country", "dance",
+    "disco", "folk", "indie", "metal", "punk", "ska", "soul", "rnb", "r&b",
+    "latin", "latino", "salsa", "bachata", "merengue", "k-pop", "kpop",
+    "j-pop", "jpop", "world music", "ambient", "chillout", "lounge",
+    "instrumental", "adult hits", "oldies", "top 40", "alternative",
+    "alternativo", "romantico", "romântico", "brega", "piseiro", "arrocha",
+    "vaporwave", "lofi", "lo-fi", "drum and bass", "dubstep", "grime",
+    "gothic", "industrial", "new age", "opera", "symphonic", "ballad",
+    "acoustic", "bossa nova", "bossanova", "swing", "gaucha", "gaúcha",
+    "vaquejada", "trap", "grunge", "hardrock", "hard rock", "classic rock",
+    "soft rock", "worship", "praise", "flashback", "80s", "90s", "70s",
+    "musica popular brasileira", "regional",
+}
+
+
+def _make_filled_star_icon(size, color):
+    """Draw a filled 5-point star of the given color, matching an outline icon's size"""
+    pixmap = QPixmap(size)
+    pixmap.fill(Qt.transparent)
+
+    painter = QPainter(pixmap)
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setBrush(color)
+    painter.setPen(Qt.NoPen)
+
+    cx, cy = size.width() / 2, size.height() / 2
+    outer_r = min(size.width(), size.height()) / 2 * 0.95
+    inner_r = outer_r * 0.5
+
+    points = []
+    for i in range(10):
+        angle = math.pi / 2 + i * math.pi / 5
+        r = outer_r if i % 2 == 0 else inner_r
+        points.append(QPointF(cx - r * math.cos(angle), cy - r * math.sin(angle)))
+
+    painter.drawPolygon(QPolygonF(points))
+    painter.end()
+    return QIcon(pixmap)
+
+
+class TopAlignedComboBox(QComboBox):
+    """A QComboBox whose popup always opens right below the box, scrolled to the top of the list"""
+
+    def showPopup(self):
+        super().showPopup()
+        self.view().scrollToTop()
+        popup = self.view().window()
+        popup.move(self.mapToGlobal(QPoint(0, self.height())))
 
 
 class LogWindow(QDialog):
@@ -58,7 +125,7 @@ class RadioApp(QWidget):
 
         # Initialize VLC
         try:
-            self.vlc_instance = vlc.Instance("--no-video")
+            self.vlc_instance = vlc.Instance("--no-video", "--network-caching=3000")
             self.player = self.vlc_instance.media_player_new()
         except Exception as e:
             QMessageBox.critical(self, "Error", f"Could not initialize VLC: {e}")
@@ -70,6 +137,8 @@ class RadioApp(QWidget):
         self.current_radio = None
         self.volume_value = 70
         self.radios = {}
+        self.radios_cache = {}
+        self.favorites = self.load_favorites()
 
         self.playback_started.connect(self._update_ui_playing)
         self.playback_error.connect(self._on_playback_error)
@@ -120,8 +189,95 @@ class RadioApp(QWidget):
 
         return countries
 
+    def load_my_radios(self):
+        """Load manually-added radios from the local persistent JSON file"""
+        try:
+            with open(MY_RADIOS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def load_favorites(self):
+        """Load favorite radios from the local persistent JSON file"""
+        try:
+            with open(FAVORITES_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return {}
+
+    def save_favorites(self):
+        """Persist favorite radios to the local JSON file"""
+        os.makedirs(CONFIG_DIR, exist_ok=True)
+        with open(FAVORITES_FILE, "w", encoding="utf-8") as f:
+            json.dump(self.favorites, f, ensure_ascii=False, indent=2)
+
+    def current_country_code(self):
+        return self.country_code_by_name.get(self.country_combo.currentText())
+
+    def get_all_favorites_flat(self):
+        """Return all favorite stations across every country as {name: station}, migrating legacy entries"""
+        flat = {}
+        migrated = False
+        for country_code in list(self.favorites.keys()):
+            entries = self.favorites[country_code]
+            if isinstance(entries, list):
+                country_radios = self.load_radios(country_code)
+                entries = {name: country_radios[name] for name in entries if name in country_radios}
+                self.favorites[country_code] = entries
+                migrated = True
+            flat.update(entries)
+        if migrated:
+            self.save_favorites()
+        return flat
+
+    def is_favorite(self, radio_name):
+        return radio_name in self.get_all_favorites_flat()
+
+    def toggle_favorite(self):
+        """Add or remove the currently playing radio from the favorites list"""
+        if not self.current_radio:
+            return
+
+        station = getattr(self, "combo_stations", {}).get(self.current_radio) or self.radios.get(self.current_radio)
+        if not station:
+            return
+
+        origin_country = station.get("country_code") or self.current_country_code()
+        favorites_for_origin = self.favorites.setdefault(origin_country, {})
+        if not isinstance(favorites_for_origin, dict):
+            favorites_for_origin = {}
+            self.favorites[origin_country] = favorites_for_origin
+
+        if self.current_radio in favorites_for_origin:
+            del favorites_for_origin[self.current_radio]
+            if not favorites_for_origin:
+                del self.favorites[origin_country]
+        else:
+            favorites_for_origin[self.current_radio] = station
+
+        self.save_favorites()
+        self.update_favorite_button()
+        self.apply_filters()
+
+    def update_favorite_button(self):
+        """Reflect the favorite status of the currently selected radio on the button icon and combo text"""
+        is_fav = self.is_favorite(self.current_radio)
+        self.favorite_btn.setIcon(self.favorite_icon_filled if is_fav else self.favorite_icon_empty)
+
+        color = FAVORITE_GREEN if is_fav else self._default_radio_text_color
+        palette = self.radio_combo.palette()
+        palette.setColor(QPalette.Text, color)
+        palette.setColor(QPalette.ButtonText, color)
+        self.radio_combo.setPalette(palette)
+
     def load_radios(self, country_code):
-        """Load radios from the Radio-Browser API, filtered by country"""
+        """Load radios from the Radio-Browser API, filtered by country (with cache)"""
+        cached = self.radios_cache.get(country_code)
+        if cached is not None:
+            radios, cached_at = cached
+            if time.time() - cached_at < CACHE_TTL_SECONDS:
+                return radios
+
         url = (
             f"{API_BASE}/json/stations/search?order=clickcount&reverse=true"
             f"&limit=500&hidebroken=true"
@@ -148,8 +304,24 @@ class RadioApp(QWidget):
                 continue
             if name in radios:
                 name = f"{name} ({station.get('countrycode', '')})"
-            radios[name] = {"url": stream_url, "uuid": station.get("stationuuid")}
-        return dict(sorted(radios.items()))
+            tags_raw = (station.get("tags") or "").strip()
+            tags = [t.strip() for t in tags_raw.split(",") if t.strip()]
+            station_country_code = (station.get("countrycode") or country_code or "").strip()
+            radios[name] = {
+                "url": stream_url,
+                "uuid": station.get("stationuuid"),
+                "tags": tags,
+                "country_code": station_country_code,
+            }
+
+        my_radios = self.load_my_radios().get(country_code, {})
+        for extra_station in my_radios.values():
+            extra_station.setdefault("country_code", country_code)
+        radios.update(my_radios)
+
+        radios = dict(sorted(radios.items()))
+        self.radios_cache[country_code] = (radios, time.time())
+        return radios
 
     def register_click(self, uuid):
         """Notify the API that the station was played (Radio-Browser click tracking)"""
@@ -178,12 +350,24 @@ class RadioApp(QWidget):
         country_label.mouseDoubleClickEvent = self.show_log_window
         country_row.addWidget(country_label)
 
-        self.country_combo = QComboBox()
+        self.country_combo = TopAlignedComboBox()
         self.country_combo.setFixedWidth(COMBO_WIDTH)
         self.country_combo.addItems([name for name, _ in self.countries])
         self.country_combo.currentIndexChanged.connect(self.on_country_changed)
         country_row.addWidget(self.country_combo)
         layout.addLayout(country_row)
+
+        # ===== CATEGORY FILTER =====
+        category_row = QHBoxLayout()
+        category_label = QLabel("Genre:")
+        category_label.setFixedWidth(LABEL_WIDTH)
+        category_row.addWidget(category_label)
+
+        self.category_combo = TopAlignedComboBox()
+        self.category_combo.setFixedWidth(COMBO_WIDTH)
+        self.category_combo.currentIndexChanged.connect(self.apply_filters)
+        category_row.addWidget(self.category_combo)
+        layout.addLayout(category_row)
 
         # ===== SEARCH FILTER =====
         search_row = QHBoxLayout()
@@ -193,7 +377,7 @@ class RadioApp(QWidget):
 
         self.search_input = QLineEdit()
         self.search_input.setFixedWidth(COMBO_WIDTH)
-        self.search_input.textChanged.connect(self.filter_radios)
+        self.search_input.textChanged.connect(self.apply_filters)
         search_row.addWidget(self.search_input)
         layout.addLayout(search_row)
 
@@ -203,8 +387,9 @@ class RadioApp(QWidget):
         radio_label.setFixedWidth(LABEL_WIDTH)
         radio_row.addWidget(radio_label)
 
-        self.radio_combo = QComboBox()
+        self.radio_combo = TopAlignedComboBox()
         self.radio_combo.setFixedWidth(COMBO_WIDTH)
+        self._default_radio_text_color = self.radio_combo.palette().color(QPalette.Text)
         self.radio_combo.currentIndexChanged.connect(self.on_radio_selected)
         radio_row.addWidget(self.radio_combo)
         layout.addLayout(radio_row)
@@ -212,22 +397,39 @@ class RadioApp(QWidget):
         # ===== CONTROL BUTTONS =====
         button_row = QHBoxLayout()
 
-        self.play_btn = QPushButton("Play")
+        self.play_btn = QPushButton()
+        self.play_btn.setIcon(QIcon(os.path.join(ASSETS_DIR, "play.png")))
+        self.play_btn.setIconSize(ICON_SIZE)
         self.play_btn.setFixedWidth(BUTTON_WIDTH)
         self.play_btn.clicked.connect(self.play)
         button_row.addWidget(self.play_btn)
 
-        self.pause_btn = QPushButton("Pause")
+        self.pause_btn = QPushButton()
+        self.pause_btn.setIcon(QIcon(os.path.join(ASSETS_DIR, "pause.png")))
+        self.pause_btn.setIconSize(ICON_SIZE)
         self.pause_btn.setFixedWidth(BUTTON_WIDTH)
         self.pause_btn.clicked.connect(self.pause)
         self.pause_btn.setEnabled(False)
         button_row.addWidget(self.pause_btn)
 
-        self.stop_btn = QPushButton("Stop")
+        self.stop_btn = QPushButton()
+        self.stop_btn.setIcon(QIcon(os.path.join(ASSETS_DIR, "stop.png")))
+        self.stop_btn.setIconSize(ICON_SIZE)
         self.stop_btn.setFixedWidth(BUTTON_WIDTH)
         self.stop_btn.clicked.connect(self.stop)
         self.stop_btn.setEnabled(False)
         button_row.addWidget(self.stop_btn)
+
+        favorite_outline_path = os.path.join(ASSETS_DIR, "add_favorite.png")
+        self.favorite_icon_empty = QIcon(favorite_outline_path)
+        self.favorite_icon_filled = _make_filled_star_icon(ICON_SIZE, FAVORITE_GREEN)
+
+        self.favorite_btn = QPushButton()
+        self.favorite_btn.setIcon(self.favorite_icon_empty)
+        self.favorite_btn.setIconSize(ICON_SIZE)
+        self.favorite_btn.setFixedWidth(BUTTON_WIDTH)
+        self.favorite_btn.clicked.connect(self.toggle_favorite)
+        button_row.addWidget(self.favorite_btn)
 
         layout.addLayout(button_row)
 
@@ -264,25 +466,86 @@ class RadioApp(QWidget):
         self.search_input.clear()
         self.search_input.blockSignals(False)
 
-        radio_names = list(self.radios.keys())
+        self.update_categories()
+        favorite_names, regular_names = self.apply_filters()
+
+        autoplay_target = regular_names[0] if regular_names else (favorite_names[0] if favorite_names else None)
+        if autoplay_target:
+            self.radio_combo.blockSignals(True)
+            self.radio_combo.setCurrentText(autoplay_target)
+            self.radio_combo.blockSignals(False)
+            self.on_radio_selected(self.radio_combo.currentIndex())
+
+    def update_categories(self):
+        """Rebuild the category combo box from the musical genre tags of the currently loaded radios"""
+        tags = set()
+        for station in self.radios.values():
+            for tag in station.get("tags", []):
+                if tag.lower() in GENRE_TAGS:
+                    tags.add(tag)
+        categories = ["All"] + sorted(tags)
+
+        self.category_combo.blockSignals(True)
+        self.category_combo.clear()
+        self.category_combo.addItems(categories)
+        self.category_combo.blockSignals(False)
+
+    def apply_filters(self, *args):
+        """Filter the radio list based on the search text and selected category.
+
+        Favorites (from every country) are pinned at the top, separated from the
+        regular (current country) list by a native combo box separator.
+        """
+        search_text = self.search_input.text().strip().lower()
+        category = self.category_combo.currentText()
+
+        def matches(station, name, ignore_category=False):
+            if search_text and search_text not in name.lower():
+                return False
+            if not ignore_category and category and category != "All" and category not in station.get("tags", []):
+                return False
+            return True
+
+        all_favorites = self.get_all_favorites_flat()
+        favorite_names = sorted(
+            name for name, station in all_favorites.items()
+            if matches(station, name, ignore_category=True)
+        )
+        favorite_set = set(favorite_names)
+
+        regular_names = sorted(
+            name for name, station in self.radios.items()
+            if name not in favorite_set and matches(station, name)
+        )
+
+        self.combo_stations = {}
+        for name in favorite_names:
+            self.combo_stations[name] = all_favorites[name]
+        for name in regular_names:
+            self.combo_stations[name] = self.radios[name]
 
         self.radio_combo.blockSignals(True)
         self.radio_combo.clear()
-        self.radio_combo.addItems(radio_names)
+        if favorite_names:
+            self.radio_combo.addItems(favorite_names)
+            for i in range(len(favorite_names)):
+                self.radio_combo.setItemData(i, FAVORITE_GREEN, Qt.ForegroundRole)
+            if regular_names:
+                self.radio_combo.insertSeparator(self.radio_combo.count())
+        self.radio_combo.addItems(regular_names)
+
+        all_names = favorite_names + regular_names
+        if self.current_radio in all_names:
+            self.radio_combo.setCurrentText(self.current_radio)
         self.radio_combo.blockSignals(False)
 
-        if radio_names:
+        if len(all_names) == 1 and all_names[0] != self.current_radio:
             self.on_radio_selected(0)
 
-    def filter_radios(self, text):
-        """Filter the radio list in the combo box based on the search text"""
-        search_text = text.strip().lower()
-        radio_names = [name for name in self.radios.keys() if search_text in name.lower()]
+        if search_text and all_names and self.search_input.hasFocus():
+            self.radio_combo.showPopup()
 
-        self.radio_combo.blockSignals(True)
-        self.radio_combo.clear()
-        self.radio_combo.addItems(radio_names)
-        self.radio_combo.blockSignals(False)
+        return favorite_names, regular_names
 
     def on_radio_selected(self, index=None):
         """When a new radio is selected in the combo box, switch and play automatically"""
@@ -301,6 +564,7 @@ class RadioApp(QWidget):
             self.is_playing = False
 
         self.play(radio_name)
+        self.search_input.clear()
 
     def play(self, radio_name=None):
         """Play the selected radio"""
@@ -310,7 +574,7 @@ class RadioApp(QWidget):
                 if not radio_name:
                     return
 
-            station = self.radios.get(radio_name)
+            station = getattr(self, "combo_stations", {}).get(radio_name) or self.radios.get(radio_name)
 
             if not station:
                 QMessageBox.critical(self, "Error", "Stream URL not found")
@@ -318,6 +582,7 @@ class RadioApp(QWidget):
 
             self.current_stream = station["url"]
             self.current_radio = radio_name
+            self.update_favorite_button()
 
             thread = threading.Thread(target=self._play_stream, daemon=True)
             thread.start()
@@ -440,6 +705,14 @@ def main():
     app = QApplication(sys.argv)
     window = RadioApp()
     window.show()
+
+    screen_geometry = app.primaryScreen().availableGeometry()
+    window_geometry = window.frameGeometry()
+    window.move(
+        screen_geometry.x() + (screen_geometry.width() - window_geometry.width()) // 2,
+        screen_geometry.y() + (screen_geometry.height() - window_geometry.height()) // 2,
+    )
+
     sys.exit(app.exec())
 
 

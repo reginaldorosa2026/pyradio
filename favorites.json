@@ -1,0 +1,69 @@
+{
+  "BR": {
+    "CBN Curitiba": {
+      "url": "https://ice-br.fabricahost.com.br/play/cbncuritiba",
+      "uuid": null,
+      "country_code": "BR"
+    },
+    "Rádio Banda B": {
+      "url": "https://ice.fabricahost.com.br/bandabctb",
+      "uuid": "93ebaad1-2736-4389-ae1a-6013bea5f459",
+      "tags": [
+        "news"
+      ],
+      "country_code": "BR"
+    },
+    "BandNews FM": {
+      "url": "https://playerservices.streamtheworld.com/api/livestream-redirect/BANDNEWSFM_SPAAC_SC",
+      "uuid": "b3a2b935-fa76-4086-9db3-22da3bb1ee9c",
+      "tags": [
+        "news",
+        "sports"
+      ],
+      "country_code": "BR"
+    },
+    "Bíblia em Áudio Rádio Web": {
+      "url": "https://stm3.voxhd.com.br:8062/stream",
+      "uuid": "61d08a95-9781-4b50-9669-0ad0fe79a0da",
+      "tags": [
+        "gospel"
+      ],
+      "country_code": "BR"
+    },
+    "Rádio Studio Flashback": {
+      "url": "https://stream-163.zeno.fm/6gv76f1xruquv?zs=SvdWy-tsTtCXPZ9IZC0ASA",
+      "uuid": "c064c241-a2c2-4dd9-b889-b292535397fe",
+      "tags": [
+        "00's",
+        "00s",
+        "2000's",
+        "2000s",
+        "70's",
+        "70s",
+        "80's",
+        "80s",
+        "90's",
+        "90s",
+        "adult contemporary",
+        "adult hits",
+        "classic hits",
+        "classic rock",
+        "classics",
+        "flash back",
+        "flashback",
+        "love songs",
+        "new classics",
+        "oldies",
+        "pop",
+        "romantic"
+      ],
+      "country_code": "BR"
+    },
+    "96 FM Bauru": {
+      "url": "https://streaming.ei3.com.br/radio/8000/mp3?cb=1708358237473",
+      "uuid": "01c07450-edd8-4533-b86b-6bde8c896343",
+      "tags": [],
+      "country_code": "BR"
+    }
+  }
+}
