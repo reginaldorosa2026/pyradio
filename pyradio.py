@@ -10,7 +10,7 @@ import threading
 import urllib.request
 
 import vlc
-from PySide6.QtCore import Qt, QPoint, QPointF, QRectF, QSize, QTimer, Signal
+from PySide6.QtCore import Qt, QEvent, QPoint, QPointF, QRectF, QSize, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QIcon, QPainter, QPen, QPixmap, QPolygonF, QRadialGradient
 from PySide6.QtWidgets import (
     QApplication, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
@@ -698,6 +698,7 @@ class RadioApp(QWidget):
         self.radio_combo.setObjectName("radioCombo")
         self.radio_combo.setItemDelegate(ComboItemDelegate(self.radio_combo))
         self.radio_combo.setFixedWidth(COMBO_WIDTH)
+        self.radio_combo.view().installEventFilter(self)
         self.radio_combo.currentIndexChanged.connect(self.on_radio_selected)
         radio_row.addWidget(self.radio_combo)
         layout.addLayout(radio_row)
@@ -869,8 +870,13 @@ class RadioApp(QWidget):
         if len(all_names) == 1 and all_names[0] != self.current_radio:
             self.on_radio_selected(0)
 
-        if search_text and all_names and self.search_input.hasFocus():
-            self.radio_combo.showPopup()
+        typing_search = self.search_input.hasFocus() or self.radio_combo.view().isVisible()
+        if search_text and typing_search:
+            if all_names:
+                self.radio_combo.showPopup()
+            else:
+                self.radio_combo.hidePopup()
+                self.search_input.setFocus()
 
         return favorite_names, regular_names
 
@@ -999,6 +1005,15 @@ class RadioApp(QWidget):
             else:
                 self.log(f"Channel not available: {self.current_radio} ({state})")
                 self._update_ui_stopped()
+
+    def eventFilter(self, obj, event):
+        """While the radio popup is open, keep forwarding typed text to the search field"""
+        if obj is self.radio_combo.view() and event.type() == QEvent.KeyPress:
+            editing_keys = (Qt.Key_Backspace, Qt.Key_Delete, Qt.Key_Left, Qt.Key_Right, Qt.Key_Home, Qt.Key_End)
+            if event.key() in editing_keys or (event.text() and event.text().isprintable()):
+                QApplication.sendEvent(self.search_input, event)
+                return True
+        return super().eventFilter(obj, event)
 
     def log(self, message):
         """Record a message in the log buffer, print it to the terminal and, if the log window is open, show it there"""
