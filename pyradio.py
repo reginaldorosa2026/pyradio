@@ -32,6 +32,9 @@ API_ATTEMPTS_PER_SERVER = 2
 API_RETRY_DELAY_SECONDS = 1
 USER_AGENT = "pyradio-qt/1.0"
 CACHE_TTL_SECONDS = 2 * 60 * 60
+FADE_STEP_MS = 50
+FADE_HOLD_STEPS = 30  # 1.5s muted after VLC reports Playing
+FADE_RAMP_STEPS = 16  # then 0.8s ramp up to the chosen volume
 MY_RADIOS_FILE = os.path.join(BASE_DIR, "my_radios.json")
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "pyradio")
 FAVORITES_FILE = os.path.join(CONFIG_DIR, "favorites.json")
@@ -444,6 +447,12 @@ class RadioApp(QWidget):
         self.status_timer = QTimer(self)
         self.status_timer.timeout.connect(self.update_status)
         self.status_timer.start(1000)
+
+        # VLC resyncs its audio clock during the first ~1.5s of a stream (audible dropouts), so start muted and fade in
+        self.fade_timer = QTimer(self)
+        self.fade_timer.setInterval(FADE_STEP_MS)
+        self.fade_timer.timeout.connect(self._fade_step)
+        self.fade_ticks = 0
 
     def load_countries(self):
         """Load the country list from the Radio-Browser API, alphabetically sorted, with Brazil first"""
@@ -927,7 +936,7 @@ class RadioApp(QWidget):
         try:
             media = self.vlc_instance.media_new(self.current_stream)
             self.player.set_media(media)
-            self.player.audio_set_volume(self.volume_value)
+            self.player.audio_set_volume(0)
             self.player.play()
             self.is_playing = True
 
@@ -967,14 +976,30 @@ class RadioApp(QWidget):
         self.volume_value = int(value)
         self.volume_label.setText(f"{self.volume_value}%")
 
+        if self.fade_timer.isActive():
+            return
+
         try:
             self.player.audio_set_volume(self.volume_value)
         except Exception as e:
             print(f"Error adjusting volume: {e}")
 
+    def _fade_step(self):
+        """Keep the audio muted while VLC settles its clock, then ramp up to the chosen volume"""
+        if self.player.get_state() != vlc.State.Playing:
+            return
+
+        self.fade_ticks += 1
+        level = min(1.0, max(0.0, (self.fade_ticks - FADE_HOLD_STEPS) / FADE_RAMP_STEPS))
+        self.player.audio_set_volume(int(self.volume_value * level))
+        if level >= 1.0:
+            self.fade_timer.stop()
+
     def _update_ui_playing(self):
         """Update UI when playing"""
         self.log(f"Playing radio: {self.current_radio} ({self.current_stream})")
+        self.fade_ticks = 0
+        self.fade_timer.start()
         self.play_btn.setEnabled(False)
         self.pause_btn.setEnabled(True)
         self.stop_btn.setEnabled(True)
@@ -989,6 +1014,7 @@ class RadioApp(QWidget):
 
     def _update_ui_stopped(self, message="Stopped"):
         """Update UI when stopped"""
+        self.fade_timer.stop()
         self.play_btn.setEnabled(True)
         self.pause_btn.setEnabled(False)
         self.stop_btn.setEnabled(False)
