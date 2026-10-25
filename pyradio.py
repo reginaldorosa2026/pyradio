@@ -45,7 +45,8 @@ MY_RADIOS_FILE = os.path.join(BASE_DIR, "my_radios.json")
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "pyradio")
 FAVORITES_FILE = os.path.join(CONFIG_DIR, "favorites.json")
 API_CACHE_DIR = os.path.join(CONFIG_DIR, "cache")
-LOG_DIR = os.path.join(BASE_DIR, "logs")
+# Next to the code when running from the project; the installed package lives in a read-only /opt
+LOG_DIR = os.path.join(BASE_DIR if os.access(BASE_DIR, os.W_OK) else CONFIG_DIR, "logs")
 
 WINDOW_MIN_WIDTH = 440
 LABEL_WIDTH = 75
