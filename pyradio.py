@@ -26,7 +26,13 @@ ICON_LIGHT = QColor(225, 227, 230)
 STATUS_COLORS = {"playing": "#2ecc71", "paused": "#f0a030", "stopped": "#8a8d93"}
 
 API_DNS_HOST = "all.api.radio-browser.info"
-API_FALLBACK_SERVERS = ["de1.api.radio-browser.info"]
+API_FALLBACK_SERVERS = [
+    "de1.api.radio-browser.info",
+    "de2.api.radio-browser.info",
+    "fi1.api.radio-browser.info",
+    "nl1.api.radio-browser.info",
+    "at1.api.radio-browser.info",
+]
 API_TIMEOUT_SECONDS = 8
 API_ATTEMPTS_PER_SERVER = 2
 API_RETRY_DELAY_SECONDS = 1
@@ -39,6 +45,7 @@ MY_RADIOS_FILE = os.path.join(BASE_DIR, "my_radios.json")
 CONFIG_DIR = os.path.join(os.path.expanduser("~"), ".config", "pyradio")
 FAVORITES_FILE = os.path.join(CONFIG_DIR, "favorites.json")
 API_CACHE_DIR = os.path.join(CONFIG_DIR, "cache")
+LOG_DIR = os.path.join(BASE_DIR, "logs")
 
 WINDOW_MIN_WIDTH = 440
 LABEL_WIDTH = 75
@@ -189,9 +196,12 @@ def discover_api_servers():
                 servers.add(hostname)
     except OSError:
         pass
-    servers = list(servers) or list(API_FALLBACK_SERVERS)
-    random.shuffle(servers)
-    return servers
+    discovered = list(servers)
+    random.shuffle(discovered)
+    # DNS often lists only one or two servers, so keep the known ones as backups after them
+    fallbacks = [s for s in API_FALLBACK_SERVERS if s not in servers]
+    random.shuffle(fallbacks)
+    return discovered + fallbacks
 
 
 def load_disk_cache(name):
@@ -411,6 +421,7 @@ class RadioApp(QWidget):
         # Log window state (must exist before anything calls self.log)
         self.log_messages = []
         self.log_window = None
+        self.log_file_lock = threading.Lock()
 
         # Initialize VLC
         try:
@@ -624,12 +635,12 @@ class RadioApp(QWidget):
         if not uuid:
             return
         try:
-            self.api_get_json(f"/json/url/{uuid}", attempts_per_server=1, log_failures=False)
+            self.api_get_json(f"/json/url/{uuid}", attempts_per_server=1)
         except Exception:
             pass
 
-    def api_get_json(self, path, attempts_per_server=API_ATTEMPTS_PER_SERVER, log_failures=True):
-        """GET a Radio-Browser endpoint, retrying and falling back across servers"""
+    def api_get_json(self, path, attempts_per_server=API_ATTEMPTS_PER_SERVER):
+        """GET a Radio-Browser endpoint, retrying and falling back across servers; only the final failure is raised (callers log it)"""
         last_error = None
         for server in list(self.api_servers):
             for attempt in range(attempts_per_server):
@@ -643,8 +654,6 @@ class RadioApp(QWidget):
                         data = json.load(response)
                 except Exception as e:
                     last_error = e
-                    if log_failures:
-                        self.log(f"{server}{path.split('?')[0]} failed (attempt {attempt + 1}): {e}")
                     continue
                 if self.api_servers[0] != server:
                     self.api_servers.remove(server)
@@ -1050,11 +1059,19 @@ class RadioApp(QWidget):
         return super().eventFilter(obj, event)
 
     def log(self, message):
-        """Record a message in the log buffer, print it to the terminal and, if the log window is open, show it there"""
-        timestamp = datetime.datetime.now().strftime("%H:%M:%S")
-        entry = f"[{timestamp}] {message}"
+        """Record a message in the log buffer, print it to the terminal, append it to the daily log file and, if the log window is open, show it there"""
+        now = datetime.datetime.now()
+        entry = f"[{now.strftime('%H:%M:%S')}] {message}"
         self.log_messages.append(entry)
         print(entry)
+
+        try:
+            with self.log_file_lock:
+                os.makedirs(LOG_DIR, exist_ok=True)
+                with open(os.path.join(LOG_DIR, f"pyradio_{now.strftime('%Y-%m-%d')}.log"), "a", encoding="utf-8") as f:
+                    f.write(entry + "\n")
+        except OSError as e:
+            print(f"Could not write log file: {e}")
 
         if self.log_window is not None:
             self.log_window.append_message(entry)
