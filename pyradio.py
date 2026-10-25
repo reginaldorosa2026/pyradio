@@ -915,6 +915,7 @@ class RadioApp(QWidget):
 
             self.current_stream = station["url"]
             self.current_radio = radio_name
+            self.http_fallback_tried = False
             self.update_favorite_button()
 
             thread = threading.Thread(target=self._play_stream, daemon=True)
@@ -999,6 +1000,13 @@ class RadioApp(QWidget):
         state = self.player.get_state()
         if self.is_playing and state in (vlc.State.Ended, vlc.State.Error, vlc.State.Stopped):
             self.is_playing = False
+            # Many stations have broken TLS certificates; retry once over plain HTTP
+            if state in (vlc.State.Ended, vlc.State.Error) and self.current_stream.startswith("https://") and not self.http_fallback_tried:
+                self.http_fallback_tried = True
+                self.current_stream = "http://" + self.current_stream[len("https://"):]
+                self.log(f"TLS failed, retrying over HTTP: {self.current_stream}")
+                threading.Thread(target=self._play_stream, daemon=True).start()
+                return
             if state in (vlc.State.Ended, vlc.State.Error):
                 self.log(f"Erro de conexão/TLS: {self.current_radio}")
                 self._update_ui_stopped("Erro de conexão/TLS")
